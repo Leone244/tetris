@@ -1,0 +1,608 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+
+const BOARD_WIDTH = 10;
+const BOARD_HEIGHT = 20;
+
+// Definir las formas de las piezas
+const TETROMINOES = {
+  I: {
+    shape: [
+      [0, 0, 0, 0],
+      [1, 1, 1, 1],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0]
+    ],
+    color: '#00f5ff'
+  },
+  O: {
+    shape: [
+      [1, 1],
+      [1, 1]
+    ],
+    color: '#ffff00'
+  },
+  T: {
+    shape: [
+      [0, 1, 0],
+      [1, 1, 1],
+      [0, 0, 0]
+    ],
+    color: '#a000ff'
+  },
+  S: {
+    shape: [
+      [0, 1, 1],
+      [1, 1, 0],
+      [0, 0, 0]
+    ],
+    color: '#00ff00'
+  },
+  Z: {
+    shape: [
+      [1, 1, 0],
+      [0, 1, 1],
+      [0, 0, 0]
+    ],
+    color: '#ff0000'
+  },
+  J: {
+    shape: [
+      [1, 0, 0],
+      [1, 1, 1],
+      [0, 0, 0]
+    ],
+    color: '#0000ff'
+  },
+  L: {
+    shape: [
+      [0, 0, 1],
+      [1, 1, 1],
+      [0, 0, 0]
+    ],
+    color: '#ff8000'
+  }
+};
+
+const createEmptyBoard = () => {
+  return Array(BOARD_HEIGHT).fill().map(() => Array(BOARD_WIDTH).fill(0));
+};
+
+const getRandomTetromino = () => {
+  const pieces = Object.keys(TETROMINOES);
+  const randomPiece = pieces[Math.floor(Math.random() * pieces.length)];
+  return {
+    shape: TETROMINOES[randomPiece].shape,
+    color: TETROMINOES[randomPiece].color,
+    x: Math.floor(BOARD_WIDTH / 2) - Math.floor(TETROMINOES[randomPiece].shape[0].length / 2),
+    y: 0
+  };
+};
+
+const rotatePiece = (piece) => {
+  const rotated = piece.shape[0].map((_, index) =>
+    piece.shape.map(row => row[index]).reverse()
+  );
+  return { ...piece, shape: rotated };
+};
+
+const isValidMove = (board, piece, deltaX = 0, deltaY = 0) => {
+  for (let y = 0; y < piece.shape.length; y++) {
+    for (let x = 0; x < piece.shape[y].length; x++) {
+      if (piece.shape[y][x]) {
+        const newX = piece.x + x + deltaX;
+        const newY = piece.y + y + deltaY;
+        
+        if (newX < 0 || newX >= BOARD_WIDTH || newY >= BOARD_HEIGHT) {
+          return false;
+        }
+        
+        if (newY >= 0 && board[newY][newX]) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+};
+
+const placePiece = (board, piece) => {
+  const newBoard = board.map(row => [...row]);
+  
+  for (let y = 0; y < piece.shape.length; y++) {
+    for (let x = 0; x < piece.shape[y].length; x++) {
+      if (piece.shape[y][x] && piece.y + y >= 0) {
+        newBoard[piece.y + y][piece.x + x] = piece.color;
+      }
+    }
+  }
+  
+  return newBoard;
+};
+
+const clearLines = (board) => {
+  let linesCleared = 0;
+  const newBoard = board.filter(row => {
+    if (row.every(cell => cell !== 0)) {
+      linesCleared++;
+      return false;
+    }
+    return true;
+  });
+  
+  while (newBoard.length < BOARD_HEIGHT) {
+    newBoard.unshift(Array(BOARD_WIDTH).fill(0));
+  }
+  
+  return { board: newBoard, linesCleared };
+};
+
+const Tetris = () => {
+  const [board, setBoard] = useState(createEmptyBoard);
+  const [currentPiece, setCurrentPiece] = useState(getRandomTetromino);
+  const [nextPiece, setNextPiece] = useState(getRandomTetromino);
+  const [score, setScore] = useState(0);
+  const [lines, setLines] = useState(0);
+  const [level, setLevel] = useState(1);
+  const [gameOver, setGameOver] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [gameStarted, setGameStarted] = useState(false);
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
+  const audioContextRef = useRef(null);
+  const oscillatorRef = useRef(null);
+  const gainNodeRef = useRef(null);
+
+  // Crear contexto de audio y música de fondo (compatible con iOS)
+  const initAudio = useCallback(() => {
+    if (!audioContextRef.current) {
+      try {
+        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+        gainNodeRef.current = audioContextRef.current.createGain();
+        gainNodeRef.current.connect(audioContextRef.current.destination);
+        gainNodeRef.current.gain.value = 0.1;
+        
+        // iOS requiere que el contexto de audio se active con interacción del usuario
+        if (audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume();
+        }
+      } catch (error) {
+        console.log('Audio no soportado en este dispositivo');
+      }
+    }
+  }, []);
+
+  const playBackgroundMusic = useCallback(() => {
+    if (!audioContextRef.current) return;
+    
+    if (oscillatorRef.current) {
+      oscillatorRef.current.stop();
+    }
+
+    // Melodía del Tetris (Korobeiniki) simplificada
+    const notes = [
+      659, 494, 523, 587, 523, 494, 440, 440, 523, 659, 587, 523,
+      494, 494, 523, 587, 659, 523, 440, 440, 0, 587, 698, 880,
+      784, 698, 659, 659, 523, 659, 587, 523, 494, 494, 523, 587,
+      659, 523, 440, 440
+    ];
+    
+    let noteIndex = 0;
+    // La música acelera con el nivel (empezando en 400ms, bajando hasta 200ms)
+    const musicSpeed = Math.max(200, 400 - (level - 1) * 20);
+    
+    const playNote = () => {
+      if (!isMusicPlaying || gameOver) return;
+      
+      const frequency = notes[noteIndex];
+      noteIndex = (noteIndex + 1) % notes.length;
+      
+      if (frequency > 0) {
+        oscillatorRef.current = audioContextRef.current.createOscillator();
+        oscillatorRef.current.type = 'square';
+        oscillatorRef.current.frequency.setValueAtTime(frequency, audioContextRef.current.currentTime);
+        oscillatorRef.current.connect(gainNodeRef.current);
+        oscillatorRef.current.start();
+        oscillatorRef.current.stop(audioContextRef.current.currentTime + 0.3);
+      }
+      
+      setTimeout(playNote, musicSpeed);
+    };
+    
+    playNote();
+  }, [isMusicPlaying, gameOver, level]);
+
+  const playSound = useCallback((frequency, duration = 0.1) => {
+    if (!audioContextRef.current) return;
+    
+    try {
+      // Reactivar contexto si está suspendido (iOS)
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume();
+      }
+      
+      const oscillator = audioContextRef.current.createOscillator();
+      const gainNode = audioContextRef.current.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContextRef.current.destination);
+      
+      oscillator.frequency.setValueAtTime(frequency, audioContextRef.current.currentTime);
+      oscillator.type = 'square';
+      gainNode.gain.setValueAtTime(0.1, audioContextRef.current.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContextRef.current.currentTime + duration);
+      
+      oscillator.start(audioContextRef.current.currentTime);
+      oscillator.stop(audioContextRef.current.currentTime + duration);
+    } catch (error) {
+      // Silenciosamente ignorar errores de audio
+    }
+  }, []);
+
+  const toggleMusic = useCallback(() => {
+    initAudio();
+    setIsMusicPlaying(prev => {
+      const newState = !prev;
+      if (newState && gameStarted && !gameOver) {
+        setTimeout(playBackgroundMusic, 100);
+      }
+      return newState;
+    });
+  }, [initAudio, playBackgroundMusic, gameStarted, gameOver]);
+
+  useEffect(() => {
+    if (isMusicPlaying && gameStarted && !gameOver && !isPaused) {
+      playBackgroundMusic();
+    }
+  }, [isMusicPlaying, gameStarted, gameOver, isPaused, level, playBackgroundMusic]);
+
+  const dropPiece = useCallback(() => {
+    if (gameOver || isPaused || !gameStarted) return;
+
+    setCurrentPiece(prev => {
+      if (isValidMove(board, prev, 0, 1)) {
+        return { ...prev, y: prev.y + 1 };
+      } else {
+        // Colocar la pieza en el tablero
+        const newBoard = placePiece(board, prev);
+        const { board: clearedBoard, linesCleared } = clearLines(newBoard);
+        
+        // Sonidos
+        if (linesCleared > 0) {
+          playSound(800 + (linesCleared * 200), 0.3); // Sonido de línea completada
+        } else {
+          playSound(200, 0.1); // Sonido de pieza colocada
+        }
+        
+        setBoard(clearedBoard);
+        setLines(prevLines => {
+          const newLines = prevLines + linesCleared;
+          setLevel(Math.floor(newLines / 10) + 1);
+          return newLines;
+        });
+        setScore(prevScore => prevScore + linesCleared * 100 * level + 10);
+        
+        // Verificar game over
+        if (!isValidMove(clearedBoard, nextPiece)) {
+          setGameOver(true);
+          playSound(100, 1); // Sonido de game over
+          return prev;
+        }
+        
+        // Nueva pieza
+        setCurrentPiece(nextPiece);
+        setNextPiece(getRandomTetromino());
+        return nextPiece;
+      }
+    });
+  }, [board, gameOver, isPaused, gameStarted, nextPiece, level, lines, playSound]);
+
+  const movePiece = useCallback((deltaX, deltaY) => {
+    if (gameOver || isPaused || !gameStarted) return;
+
+    setCurrentPiece(prev => {
+      if (isValidMove(board, prev, deltaX, deltaY)) {
+        return { ...prev, x: prev.x + deltaX, y: prev.y + deltaY };
+      }
+      return prev;
+    });
+  }, [board, gameOver, isPaused, gameStarted]);
+
+  const rotatePieceAction = useCallback(() => {
+    if (gameOver || isPaused || !gameStarted) return;
+
+    setCurrentPiece(prev => {
+      const rotated = rotatePiece(prev);
+      if (isValidMove(board, rotated)) {
+        playSound(400, 0.05); // Sonido de rotación
+        return rotated;
+      }
+      return prev;
+    });
+  }, [board, gameOver, isPaused, gameStarted, playSound]);
+
+  const hardDrop = useCallback(() => {
+    if (gameOver || isPaused || !gameStarted) return;
+
+    setCurrentPiece(prev => {
+      let newY = prev.y;
+      while (isValidMove(board, prev, 0, newY - prev.y + 1)) {
+        newY++;
+      }
+      return { ...prev, y: newY };
+    });
+  }, [board, gameOver, isPaused, gameStarted]);
+
+  const softDrop = useCallback(() => {
+    if (gameOver || isPaused || !gameStarted) return;
+    movePiece(0, 1);
+  }, [movePiece, gameOver, isPaused, gameStarted]);
+
+  // Game loop - la velocidad de caída aumenta con el nivel
+  useEffect(() => {
+    if (!gameStarted) return;
+    
+    // Velocidad base de 1000ms, se reduce 100ms por nivel hasta un mínimo de 50ms
+    const dropSpeed = Math.max(50, 1000 - (level - 1) * 100);
+    const interval = setInterval(() => {
+      dropPiece();
+    }, dropSpeed);
+
+    return () => clearInterval(interval);
+  }, [dropPiece, level, gameStarted]);
+
+  // Controles de teclado
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          movePiece(-1, 0);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          movePiece(1, 0);
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          hardDrop(); // Cambio: flecha abajo ahora hace hard drop
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          rotatePieceAction();
+          break;
+        case ' ':
+          e.preventDefault();
+          rotatePieceAction(); // Cambio: espacio ahora rota la pieza
+          break;
+        case 's':
+        case 'S':
+          e.preventDefault();
+          softDrop(); // Soft drop con S también
+          break;
+        case 'r':
+        case 'R':
+          e.preventDefault();
+          rotatePieceAction(); // R para rotar como alternativa
+          break;
+        case 'Enter':
+          e.preventDefault();
+          hardDrop();
+          break;
+        case 'p':
+        case 'P':
+          if (gameStarted && !gameOver) {
+            setIsPaused(prev => !prev);
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [movePiece, rotatePieceAction, hardDrop, softDrop, gameStarted, gameOver]);
+
+  const startGame = () => {
+    setBoard(createEmptyBoard());
+    setCurrentPiece(getRandomTetromino());
+    setNextPiece(getRandomTetromino());
+    setScore(0);
+    setLines(0);
+    setLevel(1);
+    setGameOver(false);
+    setIsPaused(false);
+    setGameStarted(true);
+    
+    // Inicializar audio si no está inicializado
+    initAudio();
+    
+    // Sonido de inicio
+    setTimeout(() => playSound(523, 0.2), 100);
+  };
+
+  const renderBoard = () => {
+    const displayBoard = placePiece(board, currentPiece);
+    
+    return displayBoard.map((row, y) =>
+      row.map((cell, x) => (
+        <div
+          key={`${y}-${x}`}
+          className="w-6 h-6 border border-gray-600"
+          style={{
+            backgroundColor: cell || '#1a1a1a',
+            borderColor: cell ? '#333' : '#444'
+          }}
+        />
+      ))
+    );
+  };
+
+  const renderNextPiece = () => {
+    const maxSize = 4;
+    const grid = Array(maxSize).fill().map(() => Array(maxSize).fill(0));
+    
+    // Centrar la pieza en la grid
+    const offsetY = Math.floor((maxSize - nextPiece.shape.length) / 2);
+    const offsetX = Math.floor((maxSize - nextPiece.shape[0].length) / 2);
+    
+    for (let y = 0; y < nextPiece.shape.length; y++) {
+      for (let x = 0; x < nextPiece.shape[y].length; x++) {
+        if (nextPiece.shape[y][x]) {
+          grid[y + offsetY][x + offsetX] = nextPiece.color;
+        }
+      }
+    }
+    
+    return grid.map((row, y) =>
+      row.map((cell, x) => (
+        <div
+          key={`next-${y}-${x}`}
+          className="w-4 h-4 border border-gray-700"
+          style={{
+            backgroundColor: cell || '#1a1a1a',
+            borderColor: cell ? '#333' : '#555'
+          }}
+        />
+      ))
+    );
+  };
+
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white p-4">
+      <div className="flex gap-8">
+        {/* Tablero principal */}
+        <div className="flex flex-col items-center">
+          <h1 className="text-4xl font-bold mb-4 text-cyan-400">TETRIS</h1>
+          <div 
+            className="grid grid-cols-10 gap-0 border-2 border-gray-500 bg-gray-800 p-2"
+            style={{ gridTemplateRows: `repeat(20, 1fr)` }}
+          >
+            {renderBoard()}
+          </div>
+          
+          {/* Controles táctiles para móvil */}
+          <div className="mt-4 grid grid-cols-4 gap-2 md:hidden">
+            <button
+              onTouchStart={(e) => { e.preventDefault(); movePiece(-1, 0); }}
+              className="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 p-3 rounded-lg font-bold text-white"
+            >
+              ←
+            </button>
+            <button
+              onTouchStart={(e) => { e.preventDefault(); softDrop(); }}
+              className="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 p-3 rounded-lg font-bold text-white"
+            >
+              ↓
+            </button>
+            <button
+              onTouchStart={(e) => { e.preventDefault(); movePiece(1, 0); }}
+              className="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 p-3 rounded-lg font-bold text-white"
+            >
+              →
+            </button>
+            <button
+              onTouchStart={(e) => { e.preventDefault(); rotatePieceAction(); }}
+              className="bg-purple-600 hover:bg-purple-700 active:bg-purple-800 p-3 rounded-lg font-bold text-white"
+            >
+              ↻
+            </button>
+          </div>
+          
+          {/* Botones adicionales para móvil */}
+          <div className="mt-2 flex gap-2 md:hidden">
+            <button
+              onTouchStart={(e) => { e.preventDefault(); hardDrop(); }}
+              className="bg-red-600 hover:bg-red-700 active:bg-red-800 px-4 py-2 rounded-lg font-bold text-white text-sm"
+            >
+              Caída Rápida
+            </button>
+            {gameStarted && !gameOver && (
+              <button
+                onTouchStart={(e) => { e.preventDefault(); setIsPaused(!isPaused); }}
+                className="bg-yellow-600 hover:bg-yellow-700 active:bg-yellow-800 px-4 py-2 rounded-lg font-bold text-white text-sm"
+              >
+                {isPaused ? 'Reanudar' : 'Pausa'}
+              </button>
+            )}
+          </div>
+          
+          {/* Controles de teclado (solo visible en desktop) */}
+          <div className="mt-4 text-center text-sm text-gray-300 hidden md:block">
+            <p>← → Mover | ↑/Space/R Rotar | ↓ Caída instantánea</p>
+            <p>S: Bajar suave | Enter: Caída rápida | P: Pausa</p>
+          </div>
+        </div>
+
+        {/* Panel lateral */}
+        <div className="flex flex-col gap-6">
+          {/* Siguiente pieza */}
+          <div className="bg-gray-800 p-4 rounded-lg border border-gray-600">
+            <h3 className="text-lg font-semibold mb-2 text-cyan-400">Siguiente</h3>
+            <div className="grid grid-cols-4 gap-0">
+              {renderNextPiece()}
+            </div>
+          </div>
+
+          {/* Estadísticas */}
+          <div className="bg-gray-800 p-4 rounded-lg border border-gray-600">
+            <h3 className="text-lg font-semibold mb-2 text-cyan-400">Estadísticas</h3>
+            <div className="space-y-2 text-sm">
+              <div>Puntuación: <span className="text-yellow-400 font-bold">{score.toLocaleString()}</span></div>
+              <div>Líneas: <span className="text-green-400 font-bold">{lines}</span></div>
+              <div>Nivel: <span className="text-purple-400 font-bold">{level}</span></div>
+              <div className="text-xs text-gray-400 mt-2">
+                Velocidad: {Math.max(50, 1000 - (level - 1) * 100)}ms
+              </div>
+            </div>
+          </div>
+
+          {/* Controles de juego */}
+          <div className="bg-gray-800 p-4 rounded-lg border border-gray-600">
+            {/* Control de música */}
+            <button
+              onClick={toggleMusic}
+              className={`w-full py-2 px-4 mb-3 rounded-lg font-semibold transition-colors ${
+                isMusicPlaying 
+                  ? 'bg-purple-600 hover:bg-purple-700' 
+                  : 'bg-gray-600 hover:bg-gray-700'
+              }`}
+            >
+              🎵 {isMusicPlaying ? 'Silenciar' : 'Música'}
+            </button>
+            
+            {!gameStarted ? (
+              <button
+                onClick={startGame}
+                className="w-full py-3 px-4 bg-green-600 hover:bg-green-700 rounded-lg font-semibold transition-colors"
+              >
+                Iniciar Juego
+              </button>
+            ) : gameOver ? (
+              <div className="text-center">
+                <p className="text-red-400 font-bold mb-3">Game Over</p>
+                <button
+                  onClick={startGame}
+                  className="w-full py-3 px-4 bg-green-600 hover:bg-green-700 rounded-lg font-semibold transition-colors"
+                >
+                  Jugar de Nuevo
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <button
+                  onClick={() => setIsPaused(!isPaused)}
+                  className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition-colors"
+                >
+                  {isPaused ? 'Reanudar' : 'Pausar'}
+                </button>
+                {isPaused && (
+                  <p className="text-center text-yellow-400 font-bold">PAUSADO</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Tetris;
